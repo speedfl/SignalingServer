@@ -16,6 +16,7 @@ const MessageTypeUnsubscribe = "unsubscribe"
 const MessageTypePublish = "publish"
 const MessageTypePing = "ping"
 const MessageTypePong = "pong"
+const MessageTypeAnnounce = "announce"
 
 type SignalingServer struct {
 	serveMux http.ServeMux
@@ -24,6 +25,8 @@ type SignalingServer struct {
 
 	//Map from topic-name to set of subscribed clients.
 	topics map[string]map[*websocket.Conn]bool
+
+	connectionLocks map[*websocket.Conn]sync.Mutex
 }
 
 type Message struct {
@@ -56,6 +59,7 @@ func (ss *SignalingServer) HandleNewConnection(conn *websocket.Conn) {
 	closed := false
 	subscribedTopics := make(map[string]bool)
 	pongReceived := true
+	ss.connectionLocks[conn] = sync.Mutex{}
 	// send ping every pingTimeout milliseconds
 	go func() {
 		for !closed {
@@ -107,6 +111,7 @@ func (ss *SignalingServer) HandleNewConnection(conn *websocket.Conn) {
 			if len(subs) == 0 {
 				delete(ss.topics, topic)
 			}
+			delete(ss.connectionLocks, conn)
 		}
 
 		return conn.Close()
@@ -130,10 +135,9 @@ func (ss *SignalingServer) handleMessage(conn *websocket.Conn, subscribedTopics 
 			ss.handleUnsubscribe(conn, msg, subscribedTopics)
 		case MessageTypePublish:
 			ss.handleTopicPublish(msg)
-
 		case MessageTypePing:
 			log.Println("Received ping:", conn.RemoteAddr())
-			err := sendMessage(conn, &Message{Type: MessageTypePong})
+			err := ss.sendMessage(conn, &Message{Type: MessageTypePong})
 			if err != nil {
 				return
 			}
@@ -197,15 +201,21 @@ func (ss *SignalingServer) handleTopicPublish(msg *Message) {
 	receivers, ok := ss.topics[msg.Topic]
 	if ok {
 		for receiver := range receivers {
-			_ = sendMessage(receiver, msg)
+			_ = ss.sendMessage(receiver, msg)
 		}
 	}
 }
 
-func sendMessage(conn *websocket.Conn, msg *Message) error {
-
+func (ss *SignalingServer) sendMessage(conn *websocket.Conn, msg *Message) error {
+	mutex, ok := ss.connectionLocks[conn]
+	if !ok {
+		log.Println("Error sending message:", conn.RemoteAddr(), "LOCK not found")
+		return nil
+	}
+	defer mutex.Unlock()
+	mutex.Lock()
 	// send json message
-	err := conn.WriteJSON(msg)
+	err := conn.WriteJSON(msg) // todo make thread safe
 	if err != nil {
 		log.Println("Error sending message:", err)
 		return err
@@ -216,7 +226,8 @@ func sendMessage(conn *websocket.Conn, msg *Message) error {
 func NewSignalingServer() *SignalingServer {
 
 	ss := &SignalingServer{
-		topics: make(map[string]map[*websocket.Conn]bool),
+		topics:          make(map[string]map[*websocket.Conn]bool),
+		connectionLocks: make(map[*websocket.Conn]sync.Mutex),
 	}
 	ss.serveMux.HandleFunc("/test", ss.handleTest)
 	// upgrade from http to websocket

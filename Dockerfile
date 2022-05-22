@@ -11,7 +11,7 @@ COPY . .
 RUN go build -o signaling-server github.com/PeerCodeProject/SignalingServer/cmd
 
 
-FROM gcr.io/distroless/base-debian10
+FROM golang:1.18
 
 WORKDIR /app
 
