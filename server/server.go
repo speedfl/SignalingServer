@@ -1,4 +1,4 @@
-package SignalingServer
+package server
 
 import (
 	"encoding/json"
@@ -223,6 +223,15 @@ func (ss *SignalingServer) sendMessage(conn *websocket.Conn, msg *Message) error
 	return nil
 }
 
+func (ss *SignalingServer) getTopics() (topics []string) {
+	ss.topicsLock.Lock()
+	defer ss.topicsLock.Unlock()
+	for topic := range ss.topics {
+		topics = append(topics, topic)
+	}
+	return
+}
+
 func NewSignalingServer() *SignalingServer {
 
 	ss := &SignalingServer{
@@ -239,4 +248,16 @@ func NewSignalingServer() *SignalingServer {
 		ss.HandleNewConnection(conn)
 	})
 	return ss
+}
+
+func RunServer(addr string) (err error, serv *http.Server) {
+	ss := NewSignalingServer()
+	serv = &http.Server{
+		Addr:         addr,
+		Handler:      ss,
+		ReadTimeout:  time.Second * 10,
+		WriteTimeout: time.Second * 10,
+	}
+	err = serv.ListenAndServe()
+	return
 }

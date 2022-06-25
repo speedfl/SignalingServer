@@ -1,25 +1,17 @@
 package main
 
 import (
-	"github.com/PeerCodeProject/SignalingServer"
+	"github.com/PeerCodeProject/SignalingServer/server"
+	"github.com/PeerCodeProject/SignalingServer/utils"
 	"log"
-	"net/http"
-	"time"
 )
 
 func main() {
-	ss := SignalingServer.NewSignalingServer()
-	addr := SignalingServer.GetPort()
-	server := &http.Server{
-		Addr:         addr,
-		Handler:      ss,
-		ReadTimeout:  time.Second * 10,
-		WriteTimeout: time.Second * 10,
-	}
+	addr := utils.GetPort()
 	log.Println("Listening on " + addr)
-	err := server.ListenAndServe()
-
+	err, s := server.RunServer(addr)
 	if err != nil {
-		panic(err)
+		s.Close()
+		return
 	}
 }
