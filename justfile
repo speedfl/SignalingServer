@@ -1,4 +1,4 @@
-set shell := ["cmd.exe", "/c"]
+#set shell := ["cmd.exe", "/c"]
 
 build:
     go build -o serv github.com/PeerCodeProject/SignalingServer
@@ -13,10 +13,13 @@ test:
     go test -v ./server
 
 docker-build:
-    docker build -t peercodeproject/signaling-server:latest .
+    docker build -t liquidibrium/signaling-server:latest .
 
 docker-run:
     docker run --name signaling-server -p 4444:4444 liquidibrium/signaling-server
+
+docker-push:
+    docker push liquidibrium/signaling-server
 
 sloc:
   wc -l **/*.go

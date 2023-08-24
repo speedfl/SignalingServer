@@ -1,13 +1,13 @@
 module github.com/PeerCodeProject/SignalingServer
 
-go 1.18
+go 1.21
 
-require github.com/fasthttp/websocket v1.5.0
+require github.com/fasthttp/websocket v1.5.4
 
 require (
-	github.com/andybalholm/brotli v1.0.4 // indirect
-	github.com/klauspost/compress v1.15.0 // indirect
-	github.com/savsgio/gotils v0.0.0-20211223103454-d0aaa54c5899 // indirect
+	github.com/andybalholm/brotli v1.0.5 // indirect
+	github.com/klauspost/compress v1.16.7 // indirect
+	github.com/savsgio/gotils v0.0.0-20230208104028-c358bd845dee // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.34.0 // indirect
+	github.com/valyala/fasthttp v1.48.0 // indirect
 )
