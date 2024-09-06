@@ -2,21 +2,28 @@ package server
 
 import (
 	"encoding/json"
-	"github.com/fasthttp/websocket"
-	"log"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/fasthttp/websocket"
+	"github.com/sirupsen/logrus"
 )
 
 const pingTimeout = 30000
 
-const MessageTypeSubscribe = "subscribe"
-const MessageTypeUnsubscribe = "unsubscribe"
-const MessageTypePublish = "publish"
-const MessageTypePing = "ping"
-const MessageTypePong = "pong"
-const MessageTypeAnnounce = "announce"
+type MessageType string
+
+const (
+	MessageTypeSubscribe   MessageType = "subscribe"
+	MessageTypeUnsubscribe MessageType = "unsubscribe"
+	MessageTypePublish     MessageType = "publish"
+	MessageTypePing        MessageType = "ping"
+	MessageTypePong        MessageType = "pong"
+	MessageTypeAnnounce    MessageType = "announce"
+)
 
 type SignalingServer struct {
 	serveMux http.ServeMux
@@ -26,11 +33,11 @@ type SignalingServer struct {
 	//Map from topic-name to set of subscribed clients.
 	topics map[string]map[*websocket.Conn]bool
 
-	connectionLocks map[*websocket.Conn]sync.Mutex
+	connectionLocks map[*websocket.Conn]*sync.Mutex
 }
 
 type Message struct {
-	Type   string      `json:"type"`
+	Type   MessageType `json:"type"`
 	Topics []string    `json:"topics"`
 	Topic  string      `json:"topic"`
 	Data   interface{} `json:"data"`
@@ -42,11 +49,10 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-func (ss *SignalingServer) handleTest(writer http.ResponseWriter, request *http.Request) {
-	log.Println("handleTest:", request.RemoteAddr)
+func (ss *SignalingServer) handleLiveness(writer http.ResponseWriter, request *http.Request) {
 	writer.WriteHeader(http.StatusOK)
 	writer.Header().Set("Content-Type", "text/plain")
-	_, _ = writer.Write([]byte("OKAY!"))
+	_, _ = writer.Write([]byte("OK"))
 
 }
 
@@ -54,33 +60,33 @@ func (ss *SignalingServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ss.serveMux.ServeHTTP(w, r)
 }
 
-func (ss *SignalingServer) HandleNewConnection(conn *websocket.Conn) {
-	log.Println("New connection:", conn.RemoteAddr())
+func (ss *SignalingServer) HandleNewConnection(logger *logrus.Entry, conn *websocket.Conn) {
+	logger.Info("new connection")
 	closed := false
 	subscribedTopics := make(map[string]bool)
 	pongReceived := true
-	ss.connectionLocks[conn] = sync.Mutex{}
+	ss.connectionLocks[conn] = &sync.Mutex{}
 	// send ping every pingTimeout milliseconds
 	go func() {
 		for !closed {
 			if !pongReceived {
-				log.Println("Closing connection due to ping timeout:", conn.RemoteAddr())
+				logger.Info("closing connection due to ping timeout")
 				err := conn.Close()
 				closed = true // anyway change to closed
 				if err != nil {
-					log.Println("Error closing connection:", err)
+					logger.Warn("error closing connection", err)
 					return
 				}
 			}
 			pongReceived = false
 			err := conn.SetReadDeadline(time.Now().Add(time.Duration(pingTimeout) * time.Millisecond))
 			if err != nil {
-				log.Println("Error setting read deadline:", err)
+				logger.Warn("error setting read deadline", err)
 				return
 			}
 			err = conn.WriteMessage(websocket.PingMessage, []byte{})
 			if err != nil {
-				log.Println("Error sending ping:", err)
+				logger.Warn("error sending ping", err)
 				return
 			}
 			time.Sleep(time.Duration(pingTimeout) * time.Millisecond)
@@ -89,7 +95,7 @@ func (ss *SignalingServer) HandleNewConnection(conn *websocket.Conn) {
 
 	// handle pong
 	conn.SetPongHandler(func(appData string) error {
-		log.Println("Pong received:", conn.RemoteAddr())
+		logger.Info("pong received")
 		pongReceived = true
 		return nil
 	})
@@ -97,17 +103,17 @@ func (ss *SignalingServer) HandleNewConnection(conn *websocket.Conn) {
 	// on close
 	conn.SetCloseHandler(func(code int, text string) error {
 		closed = true
-		log.Println("Closing connection due to close handler:", conn.RemoteAddr())
+		logger.Info("closing connection due to close handler")
 		ss.topicsLock.Lock()
 		defer ss.topicsLock.Unlock()
 		for topic := range subscribedTopics {
 			subs, ok := ss.topics[topic]
 			if !ok {
-				log.Println("Error unsubscribing from topic:", topic, ":", conn.RemoteAddr())
+				logger.Infof(`error unsubscribing from topic "%s"`, topic)
 				continue
 			}
 			delete(subs, conn)
-			log.Println("Removed connection from topic", topic, ":", conn.RemoteAddr())
+			logger.Infof(`removed connection from topic "%s"`, topic)
 			if len(subs) == 0 {
 				delete(ss.topics, topic)
 			}
@@ -117,12 +123,12 @@ func (ss *SignalingServer) HandleNewConnection(conn *websocket.Conn) {
 		return conn.Close()
 	})
 
-	go ss.handleMessage(conn, subscribedTopics)
+	go ss.handleMessage(logger, conn, subscribedTopics)
 }
 
-func (ss *SignalingServer) handleMessage(conn *websocket.Conn, subscribedTopics map[string]bool) {
+func (ss *SignalingServer) handleMessage(logger *logrus.Entry, conn *websocket.Conn, subscribedTopics map[string]bool) {
 	for {
-		msg, err := ss.receiveMessage(conn)
+		msg, err := ss.receiveMessage(logger, conn)
 		if err != nil {
 			return
 		}
@@ -130,14 +136,14 @@ func (ss *SignalingServer) handleMessage(conn *websocket.Conn, subscribedTopics 
 		// handle message
 		switch msg.Type {
 		case MessageTypeSubscribe:
-			ss.handleSubscribe(conn, msg, subscribedTopics)
+			ss.handleSubscribe(logger, conn, msg, subscribedTopics)
 		case MessageTypeUnsubscribe:
-			ss.handleUnsubscribe(conn, msg, subscribedTopics)
+			ss.handleUnsubscribe(logger, conn, msg, subscribedTopics)
 		case MessageTypePublish:
-			ss.handleTopicPublish(msg)
+			ss.handleTopicPublish(logger, msg)
 		case MessageTypePing:
-			log.Println("Received ping:", conn.RemoteAddr())
-			err := ss.sendMessage(conn, &Message{Type: MessageTypePong})
+			logger.Info("received ping")
+			err := ss.sendMessage(logger, conn, &Message{Type: MessageTypePong})
 			if err != nil {
 				return
 			}
@@ -145,25 +151,26 @@ func (ss *SignalingServer) handleMessage(conn *websocket.Conn, subscribedTopics 
 	}
 }
 
-func (ss *SignalingServer) receiveMessage(conn *websocket.Conn) (*Message, error) {
+func (ss *SignalingServer) receiveMessage(logger *logrus.Entry, conn *websocket.Conn) (*Message, error) {
 	_, message, err := conn.ReadMessage()
 	if err != nil {
-		log.Println("Error reading message:", err)
-		return nil, err
+		logger.Warn("error reading message", err)
+		return nil, fmt.Errorf("error reading message, %w", err)
 	}
-	log.Println("Received message:", string(message))
+
+	logger.Debug("received message:", string(message))
 
 	// parse message
 	msg := &Message{}
 	err = json.Unmarshal(message, msg)
 	if err != nil {
-		log.Println("Error parsing message:", err)
-		return nil, err
+		logger.Warn("error parsing message", err)
+		return nil, fmt.Errorf("error parsing message, %w", err)
 	}
 	return msg, nil
 }
 
-func (ss *SignalingServer) handleSubscribe(conn *websocket.Conn, msg *Message, subscribedTopics map[string]bool) {
+func (ss *SignalingServer) handleSubscribe(logger *logrus.Entry, conn *websocket.Conn, msg *Message, subscribedTopics map[string]bool) {
 	ss.topicsLock.Lock()
 	defer ss.topicsLock.Unlock()
 	for _, topicName := range msg.Topics {
@@ -171,21 +178,21 @@ func (ss *SignalingServer) handleSubscribe(conn *websocket.Conn, msg *Message, s
 			ss.topics[topicName] = make(map[*websocket.Conn]bool)
 		}
 		ss.topics[topicName][conn] = true
-		log.Println("Added connection to topic", topicName, ":", conn.RemoteAddr())
+		logger.Infof(`added connection to topic "%s"`, topicName)
 		// add topics to subscribedTopics
 		subscribedTopics[topicName] = true
 	}
 }
 
-func (ss *SignalingServer) handleUnsubscribe(conn *websocket.Conn, msg *Message, subscribedTopics map[string]bool) {
+func (ss *SignalingServer) handleUnsubscribe(logger *logrus.Entry, conn *websocket.Conn, msg *Message, subscribedTopics map[string]bool) {
 	ss.topicsLock.Lock()
 	defer ss.topicsLock.Unlock()
-	log.Println("Unsubscribing from topics:", msg.Topics)
+	logger.Infof("unsubscribing from topics %s", strings.Join(msg.Topics, ","))
 	for _, topicName := range msg.Topics {
 		subs, ok := ss.topics[topicName]
 		if ok {
 			delete(subs, conn)
-			log.Println("Removed connection from topic", topicName, ":", conn.RemoteAddr())
+			logger.Infof(`removed connection from topic "%s"`, topicName)
 			if len(subs) == 0 {
 				delete(ss.topics, topicName)
 			}
@@ -194,32 +201,33 @@ func (ss *SignalingServer) handleUnsubscribe(conn *websocket.Conn, msg *Message,
 	}
 }
 
-func (ss *SignalingServer) handleTopicPublish(msg *Message) {
+func (ss *SignalingServer) handleTopicPublish(logger *logrus.Entry, msg *Message) {
 	ss.topicsLock.Lock()
 	defer ss.topicsLock.Unlock()
-	log.Println("Publishing message to topic:", msg.Topic)
+	logger.Infof(`publishing message to topic "%s"`, msg.Topic)
 	receivers, ok := ss.topics[msg.Topic]
 	if ok {
 		for receiver := range receivers {
-			_ = ss.sendMessage(receiver, msg)
+			_ = ss.sendMessage(logger, receiver, msg)
 		}
 	}
 }
 
-func (ss *SignalingServer) sendMessage(conn *websocket.Conn, msg *Message) error {
+func (ss *SignalingServer) sendMessage(logger *logrus.Entry, conn *websocket.Conn, msg *Message) error {
 	mutex, ok := ss.connectionLocks[conn]
 	if !ok {
-		log.Println("Error sending message:", conn.RemoteAddr(), "LOCK not found")
+		logger.Error("error sending message, lock not found")
 		return nil
 	}
 	defer mutex.Unlock()
 	mutex.Lock()
 	// send json message
-	err := conn.WriteJSON(msg) // todo make thread safe
-	if err != nil {
-		log.Println("Error sending message:", err)
-		return err
+	// todo make thread safe
+	if err := conn.WriteJSON(msg); err != nil {
+		logger.Warn("error sending message", err)
+		return fmt.Errorf("error sending message, %w", err)
 	}
+
 	return nil
 }
 
@@ -236,16 +244,21 @@ func NewSignalingServer() *SignalingServer {
 
 	ss := &SignalingServer{
 		topics:          make(map[string]map[*websocket.Conn]bool),
-		connectionLocks: make(map[*websocket.Conn]sync.Mutex),
+		connectionLocks: make(map[*websocket.Conn]*sync.Mutex),
 	}
-	ss.serveMux.HandleFunc("/test", ss.handleTest)
+
+	ss.serveMux.HandleFunc("/health/live", ss.handleLiveness)
 	// upgrade from http to websocket
 	ss.serveMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+
+		// TODO: Auth
+
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
-		ss.HandleNewConnection(conn)
+		logger := logrus.WithField("address", conn.RemoteAddr())
+		ss.HandleNewConnection(logger, conn)
 	})
 	return ss
 }

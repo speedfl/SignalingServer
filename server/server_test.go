@@ -2,8 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"github.com/PeerCodeProject/SignalingServer/utils"
-	"github.com/fasthttp/websocket"
 	"io"
 	"log"
 	"net/http"
@@ -11,6 +9,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/PeerCodeProject/SignalingServer/utils"
+	"github.com/fasthttp/websocket"
 )
 
 func TestNewSignalingServer(t *testing.T) {
@@ -36,7 +37,7 @@ func TestNewSignalingServer(t *testing.T) {
 
 		wg.Wait()
 		// make http request to /test
-		resp, err := http.Get("http://localhost" + addr + "/test")
+		resp, err := http.Get("http://localhost" + addr + "/health/live")
 		if err != nil {
 			t.Errorf("Error http GET: %v", err)
 		}
@@ -50,7 +51,7 @@ func TestNewSignalingServer(t *testing.T) {
 			t.Errorf("receiveMessage() got = %v, want %v", resp.Status, http.StatusOK)
 		}
 		text := string(bytes[:read])
-		expected := "OKAY!"
+		expected := "OK"
 		if !reflect.DeepEqual(text, expected) {
 			t.Errorf("receiveMessage() got = %v, want %v", text, expected)
 		}

@@ -1,4 +1,4 @@
-FROM golang:1.21-bullseye AS build
+FROM golang:1.23-bullseye AS build
 
 WORKDIR /app
 
@@ -10,7 +10,6 @@ RUN go mod verify
 COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o signaling-server github.com/PeerCodeProject/SignalingServer/cmd
-
 
 FROM gcr.io/distroless/static-debian11
 
